@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>KipNest · Safe &amp; simple uploads</title>
+    <script type="module" crossorigin src="/assets/app.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/style.css">
+  </head>
+  <body>
+    <!-- Mobile app shell: fixed top bar, scrollable content, fixed bottom nav. -->
+    <header class="app-bar app-bar--top">
+      <div class="app-bar-inner">
+        <div class="min-w-0">
+          <span class="eyebrow block text-xs font-bold tracking-wide">Safe &amp; simple uploads</span>
+          <h1 class="m-0 truncate text-lg leading-tight font-black tracking-tight text-heading">KipNest</h1>
+        </div>
+        <!-- Session state as a padlock: closed/grey (locked), open/green (unlocked), closed/red (key not working). -->
+        <span id="access-state" class="power-state" data-kind="neutral" role="img" aria-label="Locked" title="Locked">
+          <svg class="lock-closed" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect class="duo" x="4.5" y="10.5" width="15" height="10.5" rx="2.5"/><rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 14.5v2.5"/></svg>
+          <svg class="lock-open" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect class="duo" x="4.5" y="10.5" width="15" height="10.5" rx="2.5"/><rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 7.7-1.5"/><path d="M12 14.5v2.5"/></svg>
+        </span>
+      </div>
+    </header>
+
+    <main class="app-content">
+      <!-- ===== Session screen (entry gate) ===== -->
+      <section id="session-view" class="view-section" aria-label="Unlock">
+        <section class="card hero-card" aria-label="Welcome">
+          <div class="hero-copy">
+            <span class="badge">Private · Encrypted connection</span>
+            <p class="hero-title">Your files,<br>safe and sound.</p>
+            <p class="hero-sub">Drop in your photos and documents. We check every file and keep it private, so only people with your key can get in.</p>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <svg viewBox="0 0 96 96" fill="none">
+              <g transform="rotate(-8 44 37)">
+                <rect x="24" y="12" width="38" height="48" rx="6" class="hero-doc"/>
+                <path d="M32 24h20M32 32h20M32 40h12" class="hero-lines"/>
+              </g>
+              <g transform="rotate(9 62 40)">
+                <rect x="46" y="20" width="32" height="40" rx="6" class="hero-doc"/>
+                <circle cx="56" cy="31" r="3.5" class="hero-sun"/>
+                <path d="M50 52l8-9 6 6 4-4 6 7" class="hero-lines"/>
+              </g>
+              <path d="M10 54h76l-6.5 21.5A8 8 0 0 1 71.8 82H24.2a8 8 0 0 1-7.7-6.5z" class="hero-nest"/>
+              <path d="M16 63h64M20 72h56" class="hero-weave"/>
+              <circle cx="78" cy="20" r="12" class="hero-badge"/>
+              <path d="M72.5 20l4 4 7-7.5" class="hero-check"/>
+            </svg>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="session-title">
+          <h2 id="session-title">Unlock your space</h2>
+          <!-- Hidden once the key is verified; only Sign out and the status remain. -->
+          <div id="token-form">
+            <label for="token">Access key</label>
+            <div class="token-field">
+              <input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="Paste your access key" aria-describedby="token-help token-error">
+              <button id="toggle-token" class="secondary icon-button" type="button" aria-controls="token" aria-pressed="false" aria-label="Show access key">
+                <svg class="icon-show" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><circle class="dot" cx="13.1" cy="10.9" r="1"/></svg>
+                <svg class="icon-hide" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/></svg>
+                <span class="button-label">Show</span>
+              </button>
+            </div>
+            <small id="token-help">Don't have one? Ask whoever runs this server (it's the UPLOAD_TOKEN value). Your key is never saved: reloading the page locks it again.</small>
+            <small id="token-error" class="field-error" hidden></small>
+            <div class="verify-row">
+              <button id="login-button" class="secondary w-full" type="button">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect class="duo" x="4" y="10" width="16" height="11" rx="3"/><rect x="4" y="10" width="16" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 7.7-1.6"/><path d="M12 14.5v2.5"/></svg>
+                <span class="button-label">Unlock</span>
+              </button>
+            </div>
+          </div>
+          <button id="logout-button" class="secondary w-full" type="button" hidden>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M4 6a2 2 0 0 1 2-2h5v16H6a2 2 0 0 1-2-2z"/><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5"/><path d="M15 8l4 4-4 4M19 12H9"/></svg>
+            <span class="button-label">Sign out</span>
+          </button>
+          <p id="session-status" role="status" aria-live="polite">Paste your key to get started.</p>
+        </section>
+      </section>
+
+      <!-- ===== Upload screen ===== -->
+      <section id="upload-view" class="view-section" hidden aria-label="Upload">
+        <section class="card" aria-labelledby="upload-title">
+          <h2 id="upload-title">Add your files</h2>
+          <form id="upload-form" novalidate>
+            <div class="file-box">
+              <svg class="file-box-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4.3 4.3 0 0 1-.5 8.5z"/><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4.3 4.3 0 0 1-.5 8.5z"/><path d="M12 16.5V11m0 0l-2.5 2.5M12 11l2.5 2.5"/><path class="spark" d="M20.5 2.5v3M19 4h3"/></svg>
+              <label for="file" class="file-box-title">Tap to pick files</label>
+              <p id="file-help">Photos (PNG, JPG), PDFs and text files · Checking the size limit…</p>
+              <input id="file" name="archivo" type="file" accept=".png,.jpg,.jpeg,.pdf,.txt" multiple aria-describedby="file-help file-error">
+              <small id="file-summary">Pick as many as you like, now or later. We'll send them one at a time.</small>
+              <small id="file-error" class="field-error" hidden></small>
+            </div>
+            <section id="queue-section" class="queue-section" aria-labelledby="queue-title" hidden>
+              <div class="section-heading">
+                <h3 id="queue-title">Ready to send</h3>
+                <button id="clear-queue" class="secondary" type="button">Clear list</button>
+              </div>
+              <p id="queue-summary" class="queue-summary"></p>
+              <ul id="upload-queue" aria-label="Files to send and how they went"></ul>
+              <small>Removing a file here won't delete anything that's already saved.</small>
+            </section>
+            <button id="upload-button" type="submit">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M21 3L3 10.5l7 2.5 2.5 7z"/><path d="M21 3L3 10.5l7 2.5 2.5 7z"/><path d="M10 13l5-5"/></svg>
+              <span class="button-label">Upload</span>
+            </button>
+          </form>
+          <div id="upload-progress" class="upload-progress" hidden>
+            <span id="batch-label" class="batch-label">Getting ready…</span>
+            <progress id="batch-progress" max="1" value="0" aria-labelledby="batch-label"></progress>
+            <div class="progress-heading">
+              <span id="progress-label">Getting ready…</span>
+              <span id="progress-value" aria-hidden="true"></span>
+            </div>
+            <progress id="progress-bar" max="100" aria-labelledby="progress-label"></progress>
+            <small>Hang tight! Keep this page open until it says done.</small>
+          </div>
+          <p id="status" role="status" aria-live="polite">Ready when you are.</p>
+        </section>
+      </section>
+
+      <!-- ===== Files screen ===== -->
+      <section id="files-view" class="view-section" hidden aria-label="Files">
+        <section class="card" aria-labelledby="files-title">
+          <div class="section-heading">
+            <h2 id="files-title">Your files</h2>
+            <button id="refresh-button" class="secondary" type="button">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20v-4h-4"/></svg>
+              <span class="button-label">Refresh</span>
+            </button>
+          </div>
+          <div id="empty-state" class="empty-state" hidden>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M3 10h18l-1.6 8.4a2 2 0 0 1-2 1.6H6.6a2 2 0 0 1-2-1.6z"/><path d="M3 10h18l-1.6 8.4a2 2 0 0 1-2 1.6H6.6a2 2 0 0 1-2-1.6z"/><path d="M7 14h10"/><path class="spark" d="M12 3v3M7.5 4.5L9 6.5M16.5 4.5L15 6.5"/></svg>
+            <p id="empty-message">Unlock with your key, then tap Refresh to see your files.</p>
+          </div>
+          <ul id="file-list" aria-label="Your files"></ul>
+        </section>
+      </section>
+
+      <footer>Private storage · Every file is checked · <span id="storage-limit">Checking space…</span></footer>
+    </main>
+
+    <!-- Bottom navigation: session / upload / files. -->
+    <nav class="app-bar app-bar--bottom" aria-label="Primary">
+      <div class="app-bar-inner">
+        <button id="nav-session" class="nav-button" data-view="session" aria-current="true" aria-label="Account">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="duo" cx="12" cy="8" r="4"/><circle cx="12" cy="8" r="4"/><path class="duo" d="M4.5 20.5a7.5 7.5 0 0 1 15 0z"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg>
+          <span class="nav-cap"></span>
+        </button>
+        <button id="nav-upload" class="nav-button" data-view="upload" aria-label="Upload" disabled>
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path class="duo" d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4.3 4.3 0 0 1-.5 8.5z"/><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4.3 4.3 0 0 1-.5 8.5z"/><path d="M12 16.5V11m0 0l-2.5 2.5M12 11l2.5 2.5"/></svg>
+          <span class="nav-cap"></span>
+        </button>
+        <button id="nav-files" class="nav-button" data-view="files" aria-label="Your files" disabled>
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 10V5.5A1.5 1.5 0 0 1 7.5 4H14l4 4v2"/><path class="duo" d="M3 10h18l-1.6 8.4a2 2 0 0 1-2 1.6H6.6a2 2 0 0 1-2-1.6z"/><path d="M3 10h18l-1.6 8.4a2 2 0 0 1-2 1.6H6.6a2 2 0 0 1-2-1.6z"/><path d="M9 14h6"/></svg>
+          <span class="nav-cap"></span>
+        </button>
+      </div>
+    </nav>
+
+    <dialog id="image-preview" class="image-preview" aria-labelledby="preview-title" aria-describedby="preview-meta">
+      <div class="preview-heading">
+        <div>
+          <h2 id="preview-title">Photo preview</h2>
+          <p id="preview-meta"></p>
+        </div>
+        <button id="close-preview" class="secondary" type="button" autofocus aria-label="Close preview">Close ×</button>
+      </div>
+      <div class="preview-stage">
+        <p id="preview-status" role="status" aria-live="polite">Loading photo…</p>
+        <img id="preview-image" alt="" hidden>
+      </div>
+      <p class="preview-hint">Press Esc or Close to go back.</p>
+    </dialog>
+
+    <aside id="notifications" class="notifications" aria-label="Notifications">
+      <div id="notification-info" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="notification-error" role="alert" aria-live="assertive" aria-atomic="true"></div>
+    </aside>
+  </body>
+</html>

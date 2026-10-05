@@ -1,0 +1,598 @@
+openapi: 3.1.0
+info:
+  title: KipNest API
+  version: 5.2.0
+  summary: 'Private file server with encryption in transit, at rest, and on download.'
+  description: |
+    The HTTP API behind the KipNest page. Open this file in any OpenAPI 3.1 viewer
+    (Swagger UI, Swagger Editor, Redoc, Postman) to browse it.
+
+    **Everything sensitive is encrypted by the client, not only by HTTPS.** Uploads,
+    file lists, receipts, statistics, and downloads travel in KipNest's own formats
+    (`KNU1`, `KNL1`, `KND1`), described in
+    [docs/ENCRYPTION.md](https://github.com/Webvelopers/KipNest/blob/master/docs/ENCRYPTION.md).
+    A plain HTTP client cannot use the API without implementing them: reuse
+    `src/client/crypto.js`, which runs unchanged in Node.js 22+
+    (`deriveTokenKey`, `openSession`, `signRequest`, `closeSession`, `encryptUpload`,
+    `openSealed`, `downloadFile`). For the same reason, "Try it out" in Swagger UI
+    only works for the public routes.
+
+    **Flow**
+
+    1. `GET /api/config` returns the KDF salt and iterations.
+    2. The client derives the token key: PBKDF2-SHA-256(access token, salt, iterations).
+       The access token itself is never sent.
+    3. `POST /api/session` runs the handshake (ECDH P-256, both sides prove they know
+       the token key) and returns a `sessionId`.
+    4. Every later request is **signed** with the session (see the `signedRequest`
+       security scheme). Each signature works once.
+    5. `DELETE /api/session` signs out.
+
+    **Common behavior**
+
+    - Errors are JSON `{ "error": "<message>" }`, sometimes with a `code`
+      (`session`, `files`). Unexpected failures answer a generic `500` without details.
+    - Requests marked `Sec-Fetch-Site: cross-site` by the browser get `403` on every API route.
+    - Every response carries `Cache-Control: no-store`, CSP, `X-Content-Type-Options`,
+      `X-Frame-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy`,
+      `Cross-Origin-Resource-Policy`, HSTS over HTTPS, and an `X-Request-Id`.
+    - Unknown paths, and suspicious ones (dot segments, `//`, backslashes, encoded
+      `.` `/` `\` or NUL), answer the same `404`.
+    - Besides the API, the server only publishes the built page: `GET /` and its files
+      under `/assets/`.
+  license:
+    name: MIT
+    url: https://github.com/Webvelopers/KipNest/blob/master/LICENSE.md
+servers:
+  - url: https://127.0.0.1:3000
+    description: 'Default local installation (HOST and PORT in .env)'
+tags:
+  - name: Public
+    description: 'No authentication.'
+  - name: Session
+    description: 'Sign in (handshake) and sign out.'
+  - name: Files
+    description: 'Signed requests; contents are encrypted for the session.'
+
+paths:
+  /api/config:
+    get:
+      tags: [Public]
+      operationId: getConfig
+      summary: 'Public limits and key-derivation parameters'
+      description: |
+        Everything the page needs before signing in. The KDF salt is not secret: it only
+        makes the token key unique to this installation. `serverTime` lets clients with
+        a wrong clock sign requests. Never blocked by the brute-force protection.
+      security: []
+      responses:
+        '200':
+          description: 'Limits and KDF parameters.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Config' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+    head:
+      tags: [Public]
+      operationId: headConfig
+      summary: 'Same as GET, without a body'
+      security: []
+      responses:
+        '200': { description: Headers only. }
+
+  /healthz:
+    get:
+      tags: [Public]
+      operationId: health
+      summary: 'Liveness probe'
+      security: []
+      responses:
+        '200':
+          description: 'The server is running.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+    head:
+      tags: [Public]
+      operationId: headHealth
+      summary: 'Liveness probe without a body'
+      security: []
+      responses:
+        '200': { description: The server is running. }
+
+  /api/session:
+    post:
+      tags: [Session]
+      operationId: openSession
+      summary: 'Sign in (handshake)'
+      description: |
+        Opens a secure session without sending the token. The client sends an ephemeral
+        P-256 public key and a proof:
+        `HMAC-SHA-256(token key, "kipnest/v1/client-proof" | publicKey | u64 timestamp)`.
+        The server answers with its own key and proof; both sides derive the session key
+        from the ECDH secret mixed with the token key.
+
+        - The timestamp must be within 5 minutes of the server clock, and each proof is
+          accepted once.
+        - Limited to 30 handshakes per minute per address.
+        - 10 failed proofs within a minute block the address (`429` with `Retry-After`),
+          for 1 minute, then 2, 4, … up to 1 hour.
+        - The body is limited to 2 KiB.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandshakeRequest' }
+      responses:
+        '201':
+          description: 'Session opened.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HandshakeResponse' }
+        '400':
+          description: 'Malformed body, invalid key, or a proof that was already used.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                replayed: { value: { error: 'This sign-in was already used.' } }
+                invalid: { value: { error: 'The secure session could not be opened.' } }
+        '401':
+          description: 'The proof does not match the token (counts as a failed attempt).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'Incorrect or missing access token.' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+    delete:
+      tags: [Session]
+      operationId: closeSession
+      summary: 'Sign out'
+      description: 'The signing session stops working at once, instead of when it expires.'
+      responses:
+        '200':
+          description: 'Signed out.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+              example: { message: 'Signed out.' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+
+  /api/files:
+    get:
+      tags: [Files]
+      operationId: listFiles
+      summary: 'List stored files'
+      description: |
+        Returns the details of every stored file, newest first, sealed for the session
+        with label `list`. Decrypted content: `FileList`.
+      responses:
+        '200':
+          description: 'Encrypted file list.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sealed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+
+  /api/stats:
+    get:
+      tags: [Files]
+      operationId: getStats
+      summary: 'Storage usage'
+      description: 'Totals only, sealed for the session with label `stats`. Decrypted content `Stats`.'
+      responses:
+        '200':
+          description: 'Encrypted statistics.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sealed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+
+  /api/upload:
+    post:
+      tags: [Files]
+      operationId: uploadFile
+      summary: 'Upload one encrypted file'
+      description: |
+        One file per request, encrypted by the client in the `KNU1` format for the very
+        session that signs the request. The server decrypts it in memory, checks the
+        content (PNG and JPG/JPEG signatures, PDF signature, strict UTF-8 text without
+        binary control characters; the declared MIME type is ignored), and stores it
+        encrypted at rest. Nothing is stored when a check fails.
+
+        - Allowed extensions: `.png`, `.jpg`, `.jpeg`, `.pdf`, `.txt`. Empty files are rejected.
+        - Size: `maxFileBytes` per file (`MAX_FILE_MB`, 100 MB by default),
+          `maxTotalBytes` in total (`MAX_STORAGE_MB`), `MAX_FILES` files.
+        - One upload at a time unless `MAX_CONCURRENT_UPLOADS` allows more.
+        - The original name travels inside the encrypted header and is sanitized
+          (Unicode NFC, control characters removed, Windows-reserved names prefixed,
+          at most 180 characters keeping the extension).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [archivo]
+              additionalProperties: false
+              properties:
+                archivo:
+                  type: string
+                  contentMediaType: application/octet-stream
+                  description: 'The `KNU1` encrypted upload. The part''s filename is ignored (the page sends `upload.knu`).'
+            encoding:
+              archivo: { contentType: application/octet-stream }
+      responses:
+        '201':
+          description: 'Stored. Encrypted receipt sealed with label `receipt`; decrypted content `Receipt`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sealed' }
+        '400':
+          description: |
+            Not a valid upload: wrong form, extra fields or files, not allowed extension,
+            empty file, damaged or replayed encryption, or encrypted for another session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                type: { value: { error: 'Select a PNG, JPG, PDF or TXT file in the archivo field.' } }
+                empty: { value: { error: 'Empty files are not allowed.' } }
+                damaged: { value: { error: 'The upload could not be verified.' } }
+                replayed: { value: { error: 'This upload was already received.' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '413':
+          description: 'The file or the request exceeds the size limit.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'The file exceeds the limit of 100 MB.' }
+        '415':
+          description: 'The content does not match the extension, or the text is not plain UTF-8.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                mismatch: { value: { error: 'The file content does not match its extension.' } }
+                text: { value: { error: 'The TXT file must be UTF-8 text without binary content.' } }
+        '429':
+          description: 'Another upload is in progress, or the address is blocked after failed signatures.'
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '507':
+          description: 'Not enough storage, or the file count limit is reached (`code` = `files`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                full: { value: { error: 'The file exceeds the available storage quota.' } }
+                files: { value: { error: 'You reached the limit of 1000 files. Delete some files to upload more.', code: files } }
+
+  /api/files/{id}:
+    parameters:
+      - $ref: '#/components/parameters/FileId'
+    delete:
+      tags: [Files]
+      operationId: deleteFile
+      summary: 'Delete a file'
+      description: 'Removes the file and its details, freeing storage at once.'
+      responses:
+        '200':
+          description: 'Deleted.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Message'
+                  - type: object
+                    required: [id]
+                    properties:
+                      id: { $ref: '#/components/schemas/FileId' }
+              example: { message: 'File deleted.', id: 1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633c }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+
+  /api/files/{id}/download:
+    parameters:
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/DownloadNonce'
+      - name: Range
+        in: header
+        required: false
+        description: |
+          One range over the encrypted body (`bytes=start-end`, `bytes=start-`, `bytes=-N`),
+          to resume an interrupted download from the last verified record. Part of the signature.
+        schema: { type: string, example: bytes=1089-, pattern: '^bytes=\d*-\d*$' }
+    get:
+      tags: [Files]
+      operationId: downloadFile
+      summary: 'Download a file (encrypted for the session)'
+      description: |
+        The stored file re-encrypted for the session in the `KND1` format (AES-256-CTR
+        with an HMAC-SHA-512 per 1 MiB record, keyed from the session key and
+        `X-Download-Nonce`). The name, type and size are inside the encrypted body; the
+        client verifies every record before decrypting it. Sent as an attachment named
+        `<id>.knd`, never cached.
+      responses:
+        '200':
+          description: 'The whole encrypted body.'
+          headers:
+            Content-Length: { schema: { type: integer } }
+            Content-Disposition: { schema: { type: string, example: 'attachment; filename="1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633c.knd"' } }
+            Accept-Ranges: { schema: { type: string, const: bytes } }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '206':
+          description: 'The requested range of the encrypted body.'
+          headers:
+            Content-Range: { schema: { type: string, example: bytes 1089-2098240/2098240 } }
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '400': { $ref: '#/components/responses/MissingDownloadNonce' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '416':
+          description: 'The range cannot be satisfied (no body).'
+          headers:
+            Content-Range: { schema: { type: string, example: 'bytes */2098240' } }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+
+  /api/files/{id}/preview:
+    parameters:
+      - $ref: '#/components/parameters/FileId'
+      - $ref: '#/components/parameters/DownloadNonce'
+    get:
+      tags: [Files]
+      operationId: previewFile
+      summary: 'Preview an image (encrypted for the session)'
+      description: 'Same format as the download, for PNG and JPG images only, without `Range` support.'
+      responses:
+        '200':
+          description: 'The whole encrypted body.'
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '400': { $ref: '#/components/responses/MissingDownloadNonce' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CrossSite' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '415':
+          description: 'The file is not a PNG or JPG image.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: 'Previews are only available for PNG and JPG images.' }
+        '429': { $ref: '#/components/responses/TooManyAttempts' }
+
+security:
+  - sessionId: []
+    requestTime: []
+    requestNonce: []
+    requestMac: []
+
+components:
+  securitySchemes:
+    sessionId:
+      type: apiKey
+      in: header
+      name: X-Session-Id
+      description: |
+        **Signed request** (all four headers together). `sessionId` from the handshake.
+        A missing, unknown or expired session answers `401` with `code` = `session`; the
+        client then opens a new session (this never counts as a failed sign-in).
+        Sessions expire after `max(15 min, upload timeout + 60 s)` without use, and after
+        12 hours in any case.
+    requestTime:
+      type: apiKey
+      in: header
+      name: X-Request-Time
+      description: 'Milliseconds since the epoch, server clock (`serverTime` from `/api/config`); within 5 minutes.'
+    requestNonce:
+      type: apiKey
+      in: header
+      name: X-Request-Nonce
+      description: '16 random bytes in base64url (22 characters), accepted once per session.'
+    requestMac:
+      type: apiKey
+      in: header
+      name: X-Request-Mac
+      description: |
+        base64url(HMAC-SHA-256(request key, lines joined with `\n`)): `kipnest/v1/request`,
+        method, path with query, `X-Request-Time`, `X-Request-Nonce`, `X-Download-Nonce`
+        (or empty), `Range` (or empty). The request key is
+        HKDF-SHA-256(session key, empty salt, `kipnest/v1/request-auth`).
+        Any bad signature answers the same `401` and counts toward the brute-force block;
+        a reused signature answers `This request was already used.`
+
+  parameters:
+    FileId:
+      name: id
+      in: path
+      required: true
+      description: 'File id from the list or the upload receipt.'
+      schema: { $ref: '#/components/schemas/FileId' }
+    DownloadNonce:
+      name: X-Download-Nonce
+      in: header
+      required: true
+      description: '16 random bytes in base64url, chosen by the client for this download; part of the key derivation and of the signature.'
+      schema: { $ref: '#/components/schemas/Base64Url16' }
+
+  headers:
+    RetryAfter:
+      description: 'Seconds to wait before trying again.'
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    Unauthorized:
+      description: 'Missing, expired, invalid, or reused signature.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            session: { value: { error: 'Your secure session expired. Unlock again to continue.', code: session } }
+            signature: { value: { error: 'This request could not be verified.' } }
+            replayed: { value: { error: 'This request was already used.' } }
+    CrossSite:
+      description: 'The browser marked the request as cross-site (`Sec-Fetch-Site: cross-site`).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'Requests from other sites are not allowed.' }
+    TooManyAttempts:
+      description: 'Too many failed proofs or signatures from this address, or too many handshakes in a minute.'
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            blocked: { value: { error: 'Too many failed attempts. Try again later.' } }
+            handshakes: { value: { error: 'Too many sign-ins. Try again in a minute.' } }
+    TooLarge:
+      description: 'The request body is too large.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'The request exceeds the allowed size.' }
+    NotFound:
+      description: 'No file with this id (also when its stored data fails verification).'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'File not found.' }
+    MissingDownloadNonce:
+      description: '`X-Download-Nonce` is missing or not 16 bytes in base64url.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'A download nonce is required.' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: Message for people; safe to show. }
+        code:
+          type: string
+          enum: [session, files]
+          description: '`session`: open a new session and retry. `files`: the file count limit is reached.'
+    Message:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    FileId:
+      type: string
+      format: uuid
+      pattern: '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'
+      example: 1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633c
+    Base64Url16:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{22}$'
+      description: '16 bytes in base64url without padding.'
+      example: 3q2-7wAAAAAAAAAAAAAAAA
+    Config:
+      type: object
+      required: [maxFileBytes, maxTotalBytes, uploadTimeoutMs, kdf, serverTime]
+      properties:
+        maxFileBytes: { type: integer, description: Largest file accepted, in bytes (MAX_FILE_MB)., example: 104857600 }
+        maxTotalBytes: { type: integer, description: Total encrypted storage, in bytes (MAX_STORAGE_MB)., example: 1073741824 }
+        uploadTimeoutMs: { type: integer, description: Time limit for one request (UPLOAD_TIMEOUT_SECONDS)., example: 300000 }
+        kdf:
+          type: object
+          required: [salt, iterations]
+          properties:
+            salt: { $ref: '#/components/schemas/Base64Url16' }
+            iterations: { type: integer, minimum: 1000, maximum: 10000000, example: 600000 }
+        serverTime: { type: integer, description: Server clock in milliseconds since the epoch., example: 1791230916767 }
+    HandshakeRequest:
+      type: object
+      required: [publicKey, timestamp, proof]
+      properties:
+        publicKey:
+          type: string
+          description: 'Ephemeral P-256 public key, uncompressed (65 bytes), base64url.'
+          pattern: '^[A-Za-z0-9_-]{87}$'
+        timestamp: { type: integer, description: Milliseconds since the epoch, server clock; within 5 minutes. }
+        proof:
+          type: string
+          description: 'HMAC-SHA-256(token key, "kipnest/v1/client-proof" | publicKey | u64 timestamp), 32 bytes, base64url.'
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    HandshakeResponse:
+      type: object
+      required: [sessionId, publicKey, salt, proof, expiresIn]
+      properties:
+        sessionId: { $ref: '#/components/schemas/Base64Url16' }
+        publicKey: { type: string, description: Server's ephemeral P-256 public key (65 bytes), base64url. }
+        salt: { type: string, description: 32 random bytes (base64url), mixed with the token key into the session key. }
+        proof:
+          type: string
+          description: 'HMAC-SHA-256(token key, "kipnest/v1/server-proof" | client key | server key | salt). The client must check it.'
+        expiresIn: { type: integer, description: Seconds the session lasts without use (sliding)., example: 900 }
+    Sealed:
+      type: object
+      description: |
+        JSON encrypted for the session (`KNL1`): key = HKDF-SHA-256(session key, nonce,
+        `kipnest/v1/<label>`), AES-256-GCM with a zero IV and AAD `KNL1<label>`. The
+        plaintext is padded with spaces to 1 KiB blocks. Open it with `openSealed`.
+      required: [nonce, data]
+      properties:
+        nonce: { $ref: '#/components/schemas/Base64Url16' }
+        data: { type: string, description: Ciphertext and GCM tag, base64url. }
+    StoredFile:
+      type: object
+      required: [id, name, size, type, createdAt]
+      properties:
+        id: { $ref: '#/components/schemas/FileId' }
+        name: { type: string, maxLength: 180, description: Original name, sanitized., example: informe.pdf }
+        size: { type: integer, minimum: 1, description: Original size in bytes. }
+        type: { type: string, enum: [image/png, image/jpeg, application/pdf, text/plain] }
+        createdAt: { type: string, format: date-time }
+    FileList:
+      type: object
+      description: 'Decrypted content of `GET /api/files` (label `list`).'
+      required: [files]
+      properties:
+        files:
+          type: array
+          items: { $ref: '#/components/schemas/StoredFile' }
+    Stats:
+      type: object
+      description: 'Decrypted content of `GET /api/stats` (label `stats`).'
+      required: [files, usedBytes, maxTotalBytes, maxFileBytes]
+      properties:
+        files: { type: integer, description: Number of stored files. }
+        usedBytes: { type: integer, description: Encrypted bytes on disk. }
+        maxTotalBytes: { type: integer }
+        maxFileBytes: { type: integer }
+    Receipt:
+      type: object
+      description: 'Decrypted content of the `POST /api/upload` reply (label `receipt`).'
+      required: [message, file]
+      properties:
+        message: { type: string, example: File uploaded successfully. }
+        file: { $ref: '#/components/schemas/StoredFile' }

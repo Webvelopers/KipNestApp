@@ -1,0 +1,34 @@
+{
+  "name": "kipnest",
+  "version": "5.2.0",
+  "private": true,
+  "description": "KipNest: a friendly, secure file server with encryption in transit, at rest, and on download.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "setup": "node scripts/generate-env.js",
+    "cert": "node scripts/generate-cert.js",
+    "start": "node server.js",
+    "start:supervised": "node scripts/supervise.js",
+    "build": "node scripts/check-dist.js",
+    "encrypt:migrate": "node scripts/encrypt-storage.js migrate",
+    "encrypt:rotate": "node scripts/encrypt-storage.js rotate"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "file-type": "^22.1.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.1"
+  },
+  "license": "MIT",
+  "author": "Webvelopers, INC."
+}
